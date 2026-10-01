@@ -53,9 +53,13 @@ export function installShims({ baseDir, port }) {
     }
     return true;
   };
+  // Deliver on a macrotask (setImmediate), NOT queueMicrotask: the bundle's
+  // module-scope `let a = performance.now()` (and friends) are initialized in
+  // statements AFTER `onmessage = r` is installed. Real worker message events
+  // are macrotasks and can only fire after module evaluation completes;
+  // microtasks would race ahead of those initializers and hit TDZ errors.
   port.on('message', (data) => {
-    // Deliver asynchronously like real worker message events.
-    queueMicrotask(() => g.dispatchEvent({ type: 'message', data }));
+    setImmediate(() => g.dispatchEvent({ type: 'message', data }));
   });
 
   // ---- script loading ------------------------------------------------------

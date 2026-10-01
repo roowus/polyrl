@@ -15,6 +15,8 @@
 import { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { exportToSaveString } from './track_codec.mjs';
 
 export const Ki = Object.freeze({
   Init: 0,
@@ -32,6 +34,37 @@ export const Ki = Object.freeze({
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const VENDOR_DIR = join(HERE, 'vendor');
+
+/** Load vendored physics assets (built by scripts/build_physics_assets.mjs). */
+export function loadPhysicsAssets() {
+  return JSON.parse(readFileSync(join(VENDOR_DIR, 'physics_assets.json'), 'utf8'));
+}
+
+/** Load an official track as a SAVE string (what CreateCar/Verify expect).
+ *  .track files are the EXPORT format (PolyTrack2 prefix + name/author
+ *  header); convert to the save format via track_codec. */
+export function loadTrackSaveString(name) {
+  const raw = readFileSync(join(VENDOR_DIR, 'tracks', 'official', `${name}.track`), 'utf8').trim();
+  return exportToSaveString(raw);
+}
+
+/** Build the Init payload from vendored physics assets. */
+export function initPayload(assets, { isRealtime = false, version = '0.6.3' } = {}) {
+  return {
+    version,
+    isRealtime,
+    trackParts: assets.parts.map((p) => ({
+      id: p.typeId,
+      vertices: new Float32Array(p.vertices),
+      detector: p.detector
+        ? { type: p.detector.type === 'Checkpoint' ? 0 : 1, center: p.detector.center, size: p.detector.size }
+        : null,
+      startOffset: p.startOffset ? [p.startOffset.x, p.startOffset.y, p.startOffset.z] : null,
+    })),
+    carCollisionShapeVertices: new Float32Array(assets.car.collisionShapeVertices),
+    carMassOffset: assets.car.massOffset,
+  };
+}
 
 /** One hosted game-simulation worker. */
 export class SimWorker {
@@ -52,6 +85,10 @@ export class SimWorker {
 
   _onMessage(msg) {
     if (msg?.type === 'host_ready') return;
+    if (msg?.type === 'host_worker_error') {
+      console.error(`[sim_worker ${this.id}] ${msg.message}\n${msg.stack ?? ''}`);
+      return;
+    }
     const t = msg?.messageType;
     if (t === Ki.UpdateResult) {
       for (const fn of this._updateListeners) fn(msg.carStateBuffers);
@@ -59,6 +96,23 @@ export class SimWorker {
     }
     const waiters = this._pending.get(t);
     if (waiters?.length) waiters.shift().resolve(msg);
+  }
+
+  /** Wait until the game worker has finished its async physics init and
+   *  drained its internal pre-init queue. We detect this by round-tripping a
+   *  TestDeterminism and confirming a DeterminismResult comes back — that
+   *  only happens after the real dispatcher is live. */
+  async waitReady(timeoutMs = 120000) {
+    const t0 = performance.now();
+    for (;;) {
+      try {
+        const ok = await this.testDeterminism(5000);
+        if (ok) return;
+      } catch {
+        /* retry until timeout */
+      }
+      if (performance.now() - t0 > timeoutMs) throw new Error('sim worker never became ready');
+    }
   }
 
   /** Send a message; if replyType is given, await the next message of that type. */
@@ -129,6 +183,8 @@ async function selftest() {
   console.log('[selftest] booting 1 worker…');
   const t0 = performance.now();
   const w = new SimWorker(0);
+  await w.waitReady();
+  console.log(`[selftest] worker ready (${(performance.now() - t0).toFixed(0)} ms)`);
 
   // The game's main thread sends Init with track parts + car collision shape
   // extracted from loaded assets. For the determinism smoke we don't need a
@@ -148,10 +204,82 @@ async function selftest() {
   if (!det) {
     console.error('[selftest] FAIL: physics not deterministic');
     process.exitCode = 1;
-  } else {
-    console.log('[selftest] PASS');
+    await w.terminate();
+    return;
   }
+  console.log('[selftest] determinism PASS');
   await w.terminate();
+
+  // ---- real-track drive: summer1, full throttle, 10 sim-seconds ----
+  const assets = loadPhysicsAssets();
+  console.log(`[track] physics assets: ${assets.parts.length} parts, car checksum ok=${assets.car.checksumOk}`);
+  const trackData = loadTrackSaveString('summer1');
+
+  const w2 = new SimWorker(1);
+  w2.worker.on('error', (e) => console.error('[track] worker error:', e.message));
+  await w2.waitReady();
+  await w2.send({ messageType: Ki.Init, ...initPayload(assets) });
+
+  const carId = 1;
+  await w2.send({
+    messageType: Ki.CreateCar,
+    // minimal valid mountain mesh: single far-away degenerate triangle
+    mountainVertices: new Float32Array([0, -1000, 0, 1, -1000, 0, 0, -1000, 1]),
+    mountainOffset: { x: 0, y: 0, z: 0 },
+    trackData,
+    carId,
+    carRecording: null,
+  });
+  console.log('[track] car created');
+
+  let updates = 0;
+  let lastState = null;
+  w2.onUpdate((buffers) => {
+    for (const buf of buffers) {
+      updates++;
+      lastState = new Uint8Array(buf);
+    }
+  });
+
+  const target = 10_000; // 10 sim-seconds at 1 kHz
+  await w2.send({ messageType: Ki.StartCar, carId, targetSimulationTimeFrames: target });
+
+  // hold throttle the whole run
+  await w2.send({ messageType: Ki.ControlCar, carId, up: true, right: false, down: false, left: false, reset: false });
+
+  // wait until frames reach target (UpdateResult states carry frame count)
+  const t1 = performance.now();
+  await new Promise((resolve, reject) => {
+    const timer = setInterval(() => {
+      if (lastState) {
+        const frames = lastState[4] | (lastState[5] << 8) | (lastState[6] << 16);
+        if (frames >= target - 1) {
+          clearInterval(timer);
+          resolve();
+        }
+      }
+      if (performance.now() - t1 > 60000) {
+        clearInterval(timer);
+        reject(new Error('timed out waiting for sim'));
+      }
+    }, 5);
+  });
+  const wall = (performance.now() - t1) / 1000;
+  const frames = lastState[4] | (lastState[5] << 8) | (lastState[6] << 16);
+  // state layout: [0..3]=carId u32, then the 227-byte VO struct
+  // (frames u24 at 4, speedKmh f32 at 7, flags at 11, nextCp u16 at 12,
+  //  pos 3×f32 at 14, quat 4×f32 at 26)
+  const view = new DataView(lastState.buffer, lastState.byteOffset);
+  const speed = view.getFloat32(7, true);
+  const px = view.getFloat32(14, true),
+    py = view.getFloat32(18, true),
+    pz = view.getFloat32(22, true);
+  console.log(
+    `[track] PASS: simmed ${frames} frames in ${wall.toFixed(2)}s wall (${(frames / 1000 / wall).toFixed(1)}× realtime); ` +
+      `updates=${updates} speed=${speed.toFixed(1)}km/h pos=(${px.toFixed(1)}, ${py.toFixed(1)}, ${pz.toFixed(1)})`,
+  );
+  await w2.terminate();
+  console.log('[selftest] ALL PASS');
 }
 
 const isMain = process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1];
