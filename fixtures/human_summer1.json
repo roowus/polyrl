@@ -1,0 +1,9 @@
+[
+  {
+    "track": "summer1",
+    "uploadId": 10809625,
+    "frames": 23122,
+    "note": "Real human lap on Summer 1 (from the desktop app's localStorage leveldb). Re-simulated headless in Node: finishes at frame 23136 (23122 + 14 coast frames to cross the line). 23.14 s lap.",
+    "recording": "eNod0L0rxXEUx_HX97q59-pS3AwS3SwMnhYUpZCEGDwsQslDmYVBHkaluAaDhZKBjb-A4g-xkAwig8Xg9_ud4Qyfzjm93ycjrpFmhZRMhZrgKO2Vbp44YYU-9oNR3oJ6nhmKdmp10hC08VHukgHOGeQxbZYH6vjLmee3zAjfwRqnjHMjTpaZSvptlV3muE7FSSqY4IJ-thjmmELwQklMskl7kI_yagdZjZWugp6ErZRzx3vadgSQcZ_VFF3OGot0gmn2EshDOmgNutiglx-KkWni3hLi-S-WIjZmWM1bFLtEwwsJ0g7rTIrJz4o-s_En_wH3ES9s"
+  }
+]

@@ -2,16 +2,22 @@
 (simulation_worker.bundle.js).
 
 Format: 5 boolean channels (up, right, down, left, reset). Per channel, a
-list of 3-byte little-endian frame numbers where the channel TOGGLES (starts
-False). Serialized layout:
+list of 3-byte little-endian **delta** values — each entry is the number of
+frames since the previous toggle *on that channel* (the first entry is the
+absolute frame of the first toggle, since toggles start at frame -0 with
+state False). Decoded absolute toggle frames are the cumulative sum.
 
-    [3-byte count][3-byte frame]*   (up)
-    [3-byte count][3-byte frame]*   (right)
+Verified against a real game recording (summer1, 23122 frames): each
+channel's cumsum stays ≤ total frames, and per-channel values are small
+positive gaps — absolute frames would have been non-monotonic.
+
+Serialized layout:
+
+    [3-byte count][3-byte delta]*   (up)
+    [3-byte count][3-byte delta]*   (right)
     ... down, left, reset
 
-then zlib-deflate (raw bytes, pako level 9 compatible — any zlib stream
-works for decode; we encode with zlib level 9), then base64url without
-padding, with '+'→'-' and '/'→'_' (base64.urlsafe already does this).
+then zlib-deflate (level 9), then base64url without padding.
 
 1 frame = 1 ms of simulation time (fixed 1 kHz tick).
 """
@@ -92,12 +98,16 @@ class Recording:
     def to_bytes(self) -> bytes:
         out = bytearray()
         for ch in CHANNELS:
-            toggles = getattr(self, ch)
+            toggles = getattr(self, ch)  # absolute toggle frames, ascending
             if len(toggles) > _MAX_U24:
                 raise ValueError(f"channel {ch} has too many toggles: {len(toggles)}")
+            if toggles != sorted(toggles):
+                raise ValueError(f"channel {ch} toggle frames not ascending")
             out += _u24(len(toggles))
+            prev = 0
             for f in toggles:
-                out += _u24(f)
+                out += _u24(f - prev)  # delta encoding (verified vs real recordings)
+                prev = f
         return bytes(out)
 
     @classmethod
@@ -107,11 +117,11 @@ class Recording:
         for ch in CHANNELS:
             count, off = _read_u24(raw, off)
             toggles: list[int] = []
+            acc = 0
             for _ in range(count):
-                f, off = _read_u24(raw, off)
-                toggles.append(f)
-            if toggles != sorted(toggles):
-                raise ValueError(f"channel {ch} toggle frames not ascending")
+                delta, off = _read_u24(raw, off)
+                acc += delta  # deltas → absolute toggle frames
+                toggles.append(acc)
             setattr(rec, ch, toggles)
         return rec
 

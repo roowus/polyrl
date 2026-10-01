@@ -17,7 +17,11 @@ process.stdin.on('end', () => {
   for (const ch of CH) {
     const t = rec[ch] ?? [];
     bytes.push(...u24(t.length));
-    for (const f of t) bytes.push(...u24(f));
+    let prev = 0;
+    for (const f of t) {
+      bytes.push(...u24(f - prev)); // delta encoding (verified vs real recordings)
+      prev = f;
+    }
   }
   const comp = zlib.deflateSync(Buffer.from(bytes), { level: 9 });
   process.stdout.write(comp.toString('base64url'));

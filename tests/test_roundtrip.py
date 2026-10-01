@@ -31,7 +31,7 @@ REPO = Path(__file__).resolve().parent.parent
 RECORDINGS = {
     "idle": Recording(),                                  # never touch a button
     "full_throttle": Recording(up=[0]),                   # hold gas forever
-    "pulse_throttle": Recording(up=[0, 250, 500, 750] * 40),  # 250 ms pulses
+    "pulse_throttle": Recording(up=[f for cycle in range(40) for f in (cycle * 1000, cycle * 1000 + 250)]),
     "throttle_left": Recording(up=[0], left=[1200, 2600]),
     "throttle_right": Recording(up=[0], right=[1500, 2900]),
 }
@@ -63,6 +63,18 @@ def test_recording_roundtrip_is_deterministic(name: str):
     assert r1["frames"] == r2["frames"]
     # sanity: the sim actually ran
     assert r1["frames"] > 0
+
+
+def test_real_human_recording_finishes():
+    """The crown-jewel test: a real human lap, decoded by our codec and
+    re-simulated headless through the game's own physics, finishes the track
+    at the same lap time the game recorded."""
+    import json
+
+    fixture = json.loads((REPO / "fixtures" / "human_summer1.json").read_text())[0]
+    result = _verify(fixture["recording"], fixture["frames"] + 500)
+    assert result["finished"] is True
+    assert abs(result["frames"] - 23136) <= 50  # finish within 50ms of the known frame
 
 
 def test_python_js_codec_conformance():
