@@ -34,8 +34,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# game constant (main.bundle.js): partSize
-PART_SIZE = 4.0  # world units per tile (deduced: checkpoint centers × partSize)
+# game constant (main.bundle.js): partSize = 5
+PART_SIZE = 5.0
 
 
 @dataclass

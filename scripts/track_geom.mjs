@@ -61,7 +61,7 @@ while (i < e.length) {
 }
 
 // ---- world transforms --------------------------------------------------------
-const PART_SIZE = 4.0;
+const PART_SIZE = 5.0; // main.bundle.js: partSize = 5
 // rotationAxis: 0=Y+ 1=Y- 2=X+ 3=X- 4=Z+ 5=Z- (from the Yh table); rotation is
 // 0..3 quarter-turns around that axis.
 const AXIS_VECS = [
@@ -85,6 +85,15 @@ function rotateVec(v, q) {
     z + 2 * (qw * uvz + uuvz),
   ];
 }
+function quatMul(a, b) {
+  const [ax, ay, az, aw] = a, [bx, by, bz, bw] = b;
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
 
 const gates = [];
 let start = null;
@@ -105,19 +114,26 @@ for (const p of placed) {
     });
   }
   if (cfg.startOffset && p.startOrder != null) {
-    const so = rotateVec([cfg.startOffset.x, cfg.startOffset.y, cfg.startOffset.z], q);
-    // highest startOrder wins (game: startOrder >= e)
+    // Game's getStartTransform: spawn = partPos*partSize + startOffset applied
+    // with quaternion = partRotation ∘ RotY(180°). The extra 180° flip is what
+    // points the car down-track (and moves the spawn ahead of the line).
+    const flip = [0, 1, 0, 0]; // RotY(180°): (x,y,z,w) = (0, sin90, 0, cos90)
+    const q2 = quatMul(q, flip);
+    const so = rotateVec([cfg.startOffset.x, cfg.startOffset.y, cfg.startOffset.z], q2);
     if (!start || p.startOrder >= start.startOrder) {
       start = {
         startOrder: p.startOrder,
         position: [base[0] + so[0], base[1] + so[1], base[2] + so[2]],
-        quaternion: q,
+        quaternion: q2,
       };
     }
   }
 }
 
 gates.sort((a, b) => a.order - b.order);
+// Centerline origin = the car spawn point (start part + rotated startOffset,
+// matching the game's getStartTransform incl. the 180° flip). Progress=0 at
+// spawn; the demo trajectory maps 0→100% across spawn…finish.
 const centerline = [start?.position, ...gates.map((g) => g.center)].filter(Boolean);
 
 const out = {
