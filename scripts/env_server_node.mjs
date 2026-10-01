@@ -113,6 +113,68 @@ async function cmdClose(msg) {
   return { ok: true };
 }
 
+// Run a recording to its end (or max_frames), collecting the 227-byte state
+// every `sample_every` frames. Used for demo extraction: (state, action)
+// pairs where action = the recording's buttons over the sampled window.
+async function cmdRunRecording(msg) {
+  const { track, recording, max_frames = 60000, sample_every = 20 } = msg;
+  const worker = new SimWorker(9000 + (nextEnvId++), { burst: 100 });
+  await worker.waitReady();
+  await worker.send({ messageType: Ki.Init, ...initPayload(assets) });
+  const carId = 1;
+  await worker.send({
+    messageType: Ki.CreateCar,
+    mountainVertices: new Float32Array(0),
+    mountainOffset: { x: 0, y: 0, z: 0 },
+    trackData: trackData(track),
+    carId,
+    carRecording: recording,
+  });
+
+  const states = [];
+  let finished = false;
+  let finishFrames = null;
+  let lastFrames = 0;
+  // update buffers: [0..3]=carId u32 | then VO struct: frames u24 @4,
+  // speedKmh f32 @7, flags u8 @11, [finishFrames u24 @12 if hasFinish], ...
+  const parse = (u8) => ({
+    frames: u8[4] | (u8[5] << 8) | (u8[6] << 16),
+    flags: u8[11],
+    hex: Buffer.from(u8.subarray(4)).toString('hex'),
+  });
+  worker.onUpdate((bufs) => {
+    for (const b of bufs) {
+      const u8 = new Uint8Array(b);
+      const s = parse(u8);
+      lastFrames = s.frames;
+      const hasFinish = (s.flags & 2) !== 0;
+      if (hasFinish) {
+        finished = true;
+        finishFrames = u8[12] | (u8[13] << 8) | (u8[14] << 16);
+      }
+      if (s.frames % sample_every === 0) states.push(s.hex);
+    }
+  });
+
+  await worker.send({ messageType: Ki.StartCar, carId, targetSimulationTimeFrames: max_frames });
+
+  const t0 = performance.now();
+  await new Promise((resolve, reject) => {
+    const iv = setInterval(() => {
+      if (finished || lastFrames >= max_frames - 1) {
+        clearInterval(iv);
+        resolve();
+      } else if (performance.now() - t0 > 120000) {
+        clearInterval(iv);
+        reject(new Error('run_recording timeout'));
+      }
+    }, 5);
+  });
+
+  await worker.terminate();
+  return { finished, finishFrames, frames: lastFrames, samples: states };
+}
+
 const rl = readline.createInterface({ input: process.stdin });
 rl.on('line', async (line) => {
   const t = line.trim();
@@ -128,6 +190,7 @@ rl.on('line', async (line) => {
     if (msg.cmd === 'reset') resp = await cmdReset(msg);
     else if (msg.cmd === 'step') resp = await cmdStep(msg);
     else if (msg.cmd === 'close') resp = await cmdClose(msg);
+    else if (msg.cmd === 'run_recording') resp = await cmdRunRecording(msg);
     else resp = { error: `unknown cmd ${msg.cmd}` };
     process.stdout.write(JSON.stringify(resp) + '\n');
   } catch (e) {

@@ -194,8 +194,8 @@ class PolyTrackEnv:
             raise RuntimeError(resp["error"])
         self._env_id = resp["env_id"]
         self._prev_s = 0.0
-        self._last_state = None
-        return self._obs_from_state(decode_car_state(bytes.fromhex(resp["state"])))
+        self._last_state = decode_car_state(bytes.fromhex(resp["state"]))
+        return self._obs_from_state(self._last_state)
 
     def step(self, action: tuple[int, int, int, int]) -> tuple[dict, float, bool, dict]:
         """action = (up, down, left, right) as 0/1. Returns (obs, reward, done, info)."""
