@@ -51,6 +51,33 @@ nodeProcess.on('unhandledRejection', (err) => {
   });
 });
 
+// Live-controls registry: the patched h() loop consults this every frame.
+// The host sets controls via a `polyrl_set_controls` message; we store the
+// latest button state per car and serve it to the patched call site.
+const liveControls = new Map(); // carId -> {up,right,down,left,reset}
+globalThis.__polyrlLiveControls = (carId, _frame) => liveControls.get(carId) ?? null;
+// Frame-exact pacing: one sim frame per burst pass so the h() loop re-checks
+// targetSimulationFrames every frame and stops exactly at the boundary.
+// (Set to 100 for throughput runs where exact stop doesn't matter.)
+globalThis.__polyrlBurst = workerData.burst ?? 1;
+
+// Intercept host messages addressed to the shim layer (not the game).
+const origDispatch = globalThis.dispatchEvent;
+globalThis.dispatchEvent = (ev) => {
+  const d = ev?.data;
+  if (d && typeof d === 'object' && d.__polyrl === 'set_controls') {
+    liveControls.set(d.carId, {
+      up: !!d.up, right: !!d.right, down: !!d.down, left: !!d.left, reset: !!d.reset,
+    });
+    return true;
+  }
+  if (d && typeof d === 'object' && d.__polyrl === 'clear_controls') {
+    liveControls.delete(d.carId);
+    return true;
+  }
+  return origDispatch(ev);
+};
+
 try {
   loadWorkerBundle(join(workerData.vendorDir, 'simulation_worker.bundle.js'));
 } finally {

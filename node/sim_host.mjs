@@ -68,10 +68,10 @@ export function initPayload(assets, { isRealtime = false, version = '0.6.3' } = 
 
 /** One hosted game-simulation worker. */
 export class SimWorker {
-  constructor(id) {
+  constructor(id, { burst = 1 } = {}) {
     this.id = id;
     this.worker = new Worker(join(HERE, 'sim_worker_entry.mjs'), {
-      workerData: { vendorDir: VENDOR_DIR },
+      workerData: { vendorDir: VENDOR_DIR, burst },
     });
     this._pending = new Map(); // messageType -> [resolve,...] (FIFO)
     this._updateListeners = [];
@@ -144,6 +144,16 @@ export class SimWorker {
       const i = this._updateListeners.indexOf(fn);
       if (i >= 0) this._updateListeners.splice(i, 1);
     };
+  }
+
+  /** Set live controls for a car (headless non-realtime driving; requires the
+   *  worker's live-controls patch, on by default in sim_worker_entry). */
+  setControls(carId, { up = false, right = false, down = false, left = false, reset = false }) {
+    this.worker.postMessage({ __polyrl: 'set_controls', carId, up, right, down, left, reset });
+  }
+
+  clearControls(carId) {
+    this.worker.postMessage({ __polyrl: 'clear_controls', carId });
   }
 
   async init({ version, isRealtime, trackParts, carCollisionShapeVertices, carMassOffset }) {

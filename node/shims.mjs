@@ -132,8 +132,48 @@ export function installShims({ baseDir, port }) {
  * Evaluate the worker bundle in this context. Returns a promise that resolves
  * once the bundle has run (its internal physics init completes asynchronously;
  * callers should wait for the first message or send Init after a tick).
+ *
+ * Before evaluation we splice in one seam the stock bundle lacks: a live
+ * controls hook for the NON-REALTIME loop. Stock `h()` only reads
+ * `t.controls.getControls(t.frames)` (a recording), so ControlCar does nothing
+ * headless. We patch the single call site `t.controls.getControls(t.frames)`
+ * in `h()` to consult `globalThis.__polyrlLiveControls(carId, frame)` first,
+ * falling back to the recording when it returns null. The patch is anchored on
+ * an exact unique substring and fails loudly if the bundle drifts.
  */
-export function loadWorkerBundle(bundlePath) {
-  const code = readFileSync(bundlePath, 'utf8');
+export function loadWorkerBundle(bundlePath, { enableLiveControls = true } = {}) {
+  let code = readFileSync(bundlePath, 'utf8');
+  if (enableLiveControls) code = patchLiveControls(code);
   vm.runInThisContext(code, { filename: bundlePath });
+}
+
+const LIVE_CONTROLS_ANCHOR = 't.frames<Qa.maxFrames&&t.frames<t.targetSimulationFrames&&!t.isPaused){const e=t.controls.getControls(t.frames);';
+// burst-count expression in h(): for 1 car this is ceil(100/1)=100 frames per
+// pass, which makes target-framing overshoot by up to 100. We replace the
+// burst loop bound with a per-pass cap the host can set (default 1 = exact
+// frame pacing; raise for throughput when frame-exactness doesn't matter).
+const BURST_ANCHOR = 'for(let t=0;t<Math.max(1,Math.ceil(100/e.length));t++){for(const t of e)if(t.hasStarted){';
+
+function patchLiveControls(code) {
+  const i = code.indexOf(LIVE_CONTROLS_ANCHOR);
+  if (i === -1) {
+    throw new Error(
+      'live-controls patch anchor not found — the vendored worker bundle changed. ' +
+        'Re-derive the anchor from the h() loop (search "targetSimulationFrames&&!t.isPaused").',
+    );
+  }
+  const patched =
+    't.frames<Qa.maxFrames&&t.frames<t.targetSimulationFrames&&!t.isPaused){' +
+    'const __lc=globalThis.__polyrlLiveControls;' +
+    'const e=__lc?(__lc(t.id,t.frames)??t.controls.getControls(t.frames)):t.controls.getControls(t.frames);';
+  code = code.slice(0, i) + patched + code.slice(i + LIVE_CONTROLS_ANCHOR.length);
+
+  const j = code.indexOf(BURST_ANCHOR);
+  if (j === -1) {
+    throw new Error('burst-loop anchor not found — bundle drifted (search "Math.ceil(100/").');
+  }
+  const patchedBurst =
+    'for(let t=0,N=Math.max(1,Math.ceil((globalThis.__polyrlBurst??100)/e.length));t<N;t++){for(const t of e)if(t.hasStarted){';
+  code = code.slice(0, j) + patchedBurst + code.slice(j + BURST_ANCHOR.length);
+  return code;
 }
