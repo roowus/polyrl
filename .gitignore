@@ -1,0 +1,20 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+
+# node
+node_modules/
+
+# polyrl runtime
+cache/*
+!cache/.gitkeep
+runs/
+*.log
+
+# vendored game files are committed (hash-pinned) — do NOT ignore node/vendor
+
+# os
+.DS_Store

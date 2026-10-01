@@ -1,0 +1,23 @@
+{
+  "source": "/tmp/polytrack-game",
+  "gameVersion": "0.6.3",
+  "extractedAt": "2026-10-01T19:43:49.587Z",
+  "files": {
+    "simulation_worker.bundle.js": {
+      "sha256": "f9b0d88dd006e75d3dce7306487ed1db7f21ac252263d77fed50b10cbf5a90f2",
+      "bytes": 323236
+    },
+    "lib/polytrack_physics.js": {
+      "sha256": "42815d83ab6929d7eafd7e98835905f40e147e031fc5f87dfb90c35f002df54a",
+      "bytes": 6419
+    },
+    "polytrack_physics.wasm": {
+      "sha256": "d4ef02676973d41afc34b23b5248f6950b35dc4cc7e3047e3a9c6bd88e4c180e",
+      "bytes": 396005
+    },
+    "package.json": {
+      "sha256": "c376fc16b0a940eff5af56a897f1f77c88548d2ea7fe6649652a6b4a8285672f",
+      "bytes": 3807
+    }
+  }
+}

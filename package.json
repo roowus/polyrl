@@ -1,0 +1,18 @@
+{
+  "name": "polyrl",
+  "version": "0.0.0",
+  "description": "tmrl-style reinforcement learning driver for PolyTrack",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "extract-sim": "node scripts/extract_sim.mjs",
+    "sim-host": "node node/sim_host.mjs",
+    "bridge": "node node/bridge.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "three": "^0.181.0"
+  }
+}
