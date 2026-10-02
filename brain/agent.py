@@ -72,9 +72,11 @@ class Actor(nn.Module):
 class SacConfig:
     obs_dim: int
     gamma: float = 0.99
-    alpha: float = 0.1          # initial alpha; auto-tuned if auto_alpha
-    auto_alpha: bool = True     # learn log_alpha toward the target entropy
-    target_entropy: float = 1.386  # 4 × ln(2) ≈ uniform-over-4-buttons entropy
+    alpha: float = 0.05         # entropy coefficient (fixed by default)
+    auto_alpha: bool = False    # auto-tuning was unstable for factorized
+                                # Bernoulli (alpha ballooned); fixed is the
+                                # standard choice for discrete SAC here.
+    target_entropy: float = 1.386
     lr: float = 3e-4
     q_ensemble: int = 4
     redq_subset: int = 2
