@@ -18,27 +18,61 @@ const trackData = (name) => {
   return trackCache.get(name);
 };
 
-// env_id -> { worker, carId, lastState: Uint8Array|null, waiters: [] }
+// env_id -> { worker, carId, lastState: Uint8Array|null, cond }
 const envs = new Map();
 let nextEnvId = 1;
+
+// Pre-spawned worker pool: booting a worker costs ~120 ms (wasm init), so we
+// keep a warm pool sized POOL_SIZE and hand them out on reset.
+const POOL_SIZE = parseInt(process.env.POLYRL_POOL ?? '8', 10);
+const pool = [];
+async function warmPool() {
+  for (let k = 0; k < POOL_SIZE; k++) {
+    const w = new SimWorker(10_000 + k);
+    await w.waitReady();
+    await w.send({ messageType: Ki.Init, ...initPayload(assets) });
+    pool.push(w);
+  }
+  console.error(`[env_server] pool warm: ${pool.length} workers`);
+}
 
 async function cmdReset(msg) {
   const envId = msg.env_id ?? nextEnvId++;
   let env = envs.get(envId);
   if (env) {
-    await env.worker.terminate();
+    env.worker.clearControls(env.carId);
+    env.worker.send({ messageType: Ki.DeleteCar, carId: env.carId });
+    // keep the warm worker; just recreate the car on it
+    const worker = env.worker;
+    env.lastState = null;
+    env.target = 0;
+    env.maxFrames = msg.max_frames ?? 90000;
+    await worker.send({
+      messageType: Ki.CreateCar,
+      mountainVertices: new Float32Array(0),
+      mountainOffset: { x: 0, y: 0, z: 0 },
+      trackData: trackData(msg.track),
+      carId: env.carId,
+      carRecording: null,
+    });
+    env.target = 1;
+    await worker.send({ messageType: Ki.StartCar, carId: env.carId, targetSimulationTimeFrames: 1 });
+    await waitFrames(env, 1);
+    return { env_id: envId, state: Buffer.from(env.lastState).toString('hex') };
   }
-  const worker = new SimWorker(envId);
-  await worker.waitReady();
-  await worker.send({ messageType: Ki.Init, ...initPayload(assets) });
-
+  const worker = pool.length ? pool.pop() : await (async () => {
+    const w = new SimWorker(envId);
+    await w.waitReady();
+    await w.send({ messageType: Ki.Init, ...initPayload(assets) });
+    return w;
+  })();
   const carId = 1;
-  env = { worker, carId, lastState: null, cond: null };
+  env = { worker, carId, lastState: null, cond: null, target: 0 };
   worker.onUpdate((bufs) => {
     for (const b of bufs) {
       const u8 = new Uint8Array(b);
       const id = u8[0] | (u8[1] << 8) | (u8[2] << 16) | (u8[3] << 24);
-      if (id === carId) env.lastState = u8.slice(4); // strip carId header
+      if (id === carId) env.lastState = u8.slice(4);
     }
     env.cond?.();
   });
@@ -53,14 +87,8 @@ async function cmdReset(msg) {
     carRecording: null,
   });
   env.maxFrames = msg.max_frames ?? 90000;
-
-  // Track the frame target we last commanded, NOT the observed frame (which
-  // lags). The h() loop stops exactly at target each time (burst=1), so the
-  // commanded target IS the car's frame once waitFrames returns.
   env.target = 1;
-  await worker.send({ messageType: Ki.StartCar, carId, targetSimulationTimeFrames: env.target });
-
-  // wait for the first state so reset() returns a real observation
+  await worker.send({ messageType: Ki.StartCar, carId, targetSimulationTimeFrames: 1 });
   await waitFrames(env, 1);
   return { env_id: envId, state: Buffer.from(env.lastState).toString('hex') };
 }
@@ -102,6 +130,39 @@ async function cmdStep(msg) {
   await env.worker.send({ messageType: Ki.StartCar, carId: env.carId, targetSimulationTimeFrames: env.target });
   await waitFrames(env, env.target);
   return { env_id: msg.env_id, state: Buffer.from(env.lastState).toString('hex') };
+}
+
+// step N envs at once: one command, one response; each env advances R frames.
+// {cmd:"step_all", frames:R, actions:[{env_id, controls}, ...]}
+async function cmdStepAll(msg) {
+  const R = msg.frames ?? 20;
+  const jobs = [];
+  for (const { env_id, controls } of msg.actions) {
+    const env = envs.get(env_id);
+    if (!env) continue;
+    const c = controls ?? {};
+    env.worker.setControls(env.carId, {
+      up: !!c.up, down: !!c.down, left: !!c.left, right: !!c.right, reset: !!c.reset,
+    });
+    env.target += R;
+    jobs.push(
+      env.worker
+        .send({ messageType: Ki.StartCar, carId: env.carId, targetSimulationTimeFrames: env.target })
+        .then(() => waitFrames(env, env.target))
+        .then(() => ({ env_id, state: Buffer.from(env.lastState).toString('hex') })),
+    );
+  }
+  const results = await Promise.all(jobs);
+  return { results };
+}
+
+// reset N envs at once: {cmd:"reset_all", envs:[{env_id?, track, max_frames}, ...]}
+async function cmdResetAll(msg) {
+  const results = [];
+  for (const e of msg.envs) {
+    results.push(await cmdReset(e));
+  }
+  return { results };
 }
 
 async function cmdClose(msg) {
@@ -176,6 +237,7 @@ async function cmdRunRecording(msg) {
 }
 
 const rl = readline.createInterface({ input: process.stdin });
+warmPool().then(() => rl.emit('ready'));
 rl.on('line', async (line) => {
   const t = line.trim();
   if (!t) return;
@@ -191,6 +253,8 @@ rl.on('line', async (line) => {
     else if (msg.cmd === 'step') resp = await cmdStep(msg);
     else if (msg.cmd === 'close') resp = await cmdClose(msg);
     else if (msg.cmd === 'run_recording') resp = await cmdRunRecording(msg);
+    else if (msg.cmd === 'step_all') resp = await cmdStepAll(msg);
+    else if (msg.cmd === 'reset_all') resp = await cmdResetAll(msg);
     else resp = { error: `unknown cmd ${msg.cmd}` };
     process.stdout.write(JSON.stringify(resp) + '\n');
   } catch (e) {
