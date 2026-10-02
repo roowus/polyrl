@@ -73,10 +73,20 @@ def extract_demo(track: str, recording_str: str, control_hz: float = 50.0, max_f
 
 
 def load_fixtures() -> list[dict]:
+    """All demo fixtures. Handles both the single-lap format (human_summer1.json)
+    and the leaderboard format (leaderboard_*.json, a list with `track` implied
+    by filename). Each returned dict has at least {track, recording, frames?}."""
     fx = REPO / "fixtures"
     out = []
     for f in sorted(fx.glob("*.json")):
-        out.extend(json.loads(f.read_text()))
+        data = json.loads(f.read_text())
+        # leaderboard files: track comes from the filename `leaderboard_<track>.json`
+        if f.name.startswith("leaderboard_"):
+            track = f.stem[len("leaderboard_"):]
+            for entry in data:
+                out.append({"track": track, **entry})
+        else:
+            out.extend(data)
     return out
 
 

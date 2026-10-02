@@ -143,5 +143,16 @@ const out = {
   start,
   gates,
   centerline,
+  // every placed part with world-space center + rotation, for racing-line
+  // reconstruction in Python (driveable parts carry the geometry)
+  placedParts: placed.map((p) => ({
+    typeId: p.typeId,
+    type: byTypeId.get(p.typeId)?.type ?? null,
+    x: p.x * PART_SIZE,
+    y: p.y * PART_SIZE,
+    z: p.z * PART_SIZE,
+    rotation: p.rotation,
+    rotationAxis: p.rotationAxis,
+  })),
 };
 console.log(JSON.stringify(out));
