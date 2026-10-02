@@ -23,11 +23,13 @@ import torch.nn.functional as F
 ACTOR_HEAD = "bernoulli"  # or "categorical" (16-way)
 
 
-def mlp(sizes, act=nn.ReLU, out_act=None):
+def mlp(sizes, act=nn.ReLU, out_act=None, layernorm=True):
     layers = []
     for i in range(len(sizes) - 1):
         layers.append(nn.Linear(sizes[i], sizes[i + 1]))
         if i < len(sizes) - 2:
+            if layernorm:
+                layers.append(nn.LayerNorm(sizes[i + 1]))
             layers.append(act())
     if out_act is not None:
         layers.append(out_act())
@@ -81,8 +83,10 @@ class SacConfig:
     q_ensemble: int = 4
     redq_subset: int = 2
     hidden: int = 256
-    target_update_tau: float = 0.005
+    target_update_tau: float = 0.001   # slower target net (sparse finish reward)
     max_grad_norm: float = 1.0
+    huber: bool = True                 # Huber (smooth-L1) Q loss vs MSE
+    target_clip: float = 50.0          # clamp Q bootstrap targets
 
 
 class SAC:
@@ -122,10 +126,14 @@ class SAC:
             q_next = self._q_of(qs, next_a.unsqueeze(0).expand(qs.shape[0], -1, -1))
             q_next = q_next.min(dim=0).values.sum(-1)  # min over subset, sum over buttons
             target = rewards + self.cfg.gamma * (1 - dones) * (q_next - self.alpha.detach() * next_logp)
+            target = target.clamp(-self.cfg.target_clip, self.cfg.target_clip)
 
         q_taken = self._q_of(self.q(obs), actions.unsqueeze(0).expand(self.cfg.q_ensemble, -1, -1))
-        q_taken = q_taken.sum(-1)  # sum over buttons → (E, B)
-        return F.mse_loss(q_taken, target.unsqueeze(0).expand(self.cfg.q_ensemble, -1))
+        q_taken = q_taken.sum(-1).contiguous()  # sum over buttons → (E, B)
+        tgt = target.unsqueeze(0).expand(self.cfg.q_ensemble, -1).contiguous()
+        if self.cfg.huber:
+            return F.smooth_l1_loss(q_taken, tgt)
+        return F.mse_loss(q_taken, tgt)
 
     def actor_loss(self, obs):
         a, logp = self.actor.sample(obs)
