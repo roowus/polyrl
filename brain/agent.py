@@ -87,6 +87,9 @@ class SacConfig:
     max_grad_norm: float = 1.0
     huber: bool = True                 # Huber (smooth-L1) Q loss vs MSE
     target_clip: float = 50.0          # clamp Q bootstrap targets
+    bc_coef: float = 0.0               # >0: add bc_coef * BCE(pi, demo_actions)
+                                       # to the actor loss on demo samples
+                                       # (anti-collapse anchor)
 
 
 class SAC:
@@ -145,7 +148,7 @@ class SAC:
         # drive entropy toward target: -log_alpha * (logp + target).detach()
         return (-self.log_alpha * (logp + self.cfg.target_entropy).detach()).mean()
 
-    def update(self, batch) -> dict:
+    def update(self, batch, demo_batch=None) -> dict:
         obs, actions, next_obs, rewards, dones = [t.to(self.device) for t in batch]
 
         self.q_opt.zero_grad()
@@ -156,11 +159,22 @@ class SAC:
 
         self.actor_opt.zero_grad()
         al, logp = self.actor_loss(obs)
-        al.backward()
+        total_actor = al
+        # BC anchor: on demo (s, a_human) pairs, pull the policy toward the
+        # human action. Prevents the collapse-to-sit-still failure mode.
+        if self.cfg.bc_coef > 0 and demo_batch is not None:
+            d_obs, d_act = demo_batch[0].to(self.device), demo_batch[1].to(self.device)
+            p = self.actor(d_obs).clamp(1e-6, 1 - 1e-6)
+            bc = F.binary_cross_entropy(p, d_act.float(), reduction="none").sum(-1).mean()
+            total_actor = al + self.cfg.bc_coef * bc
+            metrics_bc = bc.item()
+        total_actor.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.cfg.max_grad_norm)
         self.actor_opt.step()
 
         metrics = {"q_loss": ql.item(), "actor_loss": al.item(), "logp": logp.item(), "alpha": self.alpha.item()}
+        if self.cfg.bc_coef > 0 and demo_batch is not None:
+            metrics["bc_loss"] = metrics_bc
 
         if self.cfg.auto_alpha:
             self.alpha_opt.zero_grad()

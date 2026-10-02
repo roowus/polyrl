@@ -60,6 +60,7 @@ def main():
     ap.add_argument("--bc", default=None)
     ap.add_argument("--start-steps", type=int, default=500)
     ap.add_argument("--updates-per-step", type=int, default=4, help="REDQ: cheap env → high UTD")
+    ap.add_argument("--bc-coef", type=float, default=0.0, help="BC anchor strength on demo actions")
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--demo-ratio", type=float, default=0.25)
     ap.add_argument("--logdir", default=str(REPO / "runs"))
@@ -70,7 +71,7 @@ def main():
     env = VecPolyTrackEnv(n_envs=args.envs, track=args.track, control_hz=50, max_episode_frames=60_000)
     geom = env.geom
 
-    sac = SAC(SacConfig(obs_dim=OBS_DIM), device=device)
+    sac = SAC(SacConfig(obs_dim=OBS_DIM, bc_coef=args.bc_coef), device=device)
     if args.bc:
         ck = torch.load(args.bc, map_location=device, weights_only=False)
         sac.actor.load_state_dict(ck["actor"])
@@ -139,8 +140,16 @@ def main():
         states = next_states
 
         if step > args.start_steps and len(buffer) >= args.batch:
+            # demo_batch for the BC anchor: raw demo (s, a) pairs
+            demo_batch = None
+            if args.bc_coef > 0 and buffer.demo:
+                import random as _r
+                dsample = _r.sample(buffer.demo, min(args.batch, len(buffer.demo)))
+                d_obs = torch.tensor(np.array([d[0] for d in dsample]), dtype=torch.float32)
+                d_act = torch.tensor(np.array([d[1] for d in dsample]), dtype=torch.long)
+                demo_batch = (d_obs, d_act)
             for _ in range(args.updates_per_step):
-                metrics = sac.update(buffer.sample(args.batch))
+                metrics = sac.update(buffer.sample(args.batch), demo_batch=demo_batch)
             if writer and step % 100 == 0:
                 for k, v in metrics.items():
                     writer.add_scalar(f"sac/{k}", v, step)
