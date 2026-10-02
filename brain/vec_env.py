@@ -29,17 +29,19 @@ class VecPolyTrackEnv:
         self.R = max(1, round(1000 / control_hz))
         self.max_episode_frames = max_episode_frames
         self.rw = {
-            "progress": 1.0,
-            "checkpoint": 12.0,
-            "finish": 200.0,
-            "time_penalty": 0.01,
-            "collision": 0.002,
+            "progress": 0.1,        # ~m per step → keep Q targets O(1)
+            "checkpoint": 1.0,
+            "finish": 10.0,
+            "time_penalty": 0.002,
+            "collision": 0.0005,
+            "gate_progress": 0.05,  # per meter of distance-to-gate closed
             **(reward or {}),
         }
         self._node = _NodeProc()
         self._env_ids: list[int | None] = [None] * n_envs
         self._prev_s = np.zeros(n_envs, dtype=np.float64)
         self._prev_cp = np.zeros(n_envs, dtype=np.int32)
+        self._prev_gate_dist: list[float | None] = [None] * n_envs
         self._states: list[CarState | None] = [None] * n_envs
 
     def reset_all(self) -> np.ndarray:
@@ -60,6 +62,7 @@ class VecPolyTrackEnv:
             self._states[i] = st
             self._prev_s[i] = 0.0
             self._prev_cp[i] = st.next_checkpoint_index
+            self._prev_gate_dist[i] = None
             feats.append(featurize(st, self.geom))
         return np.asarray(feats, dtype=np.float32)
 
@@ -123,6 +126,7 @@ class VecPolyTrackEnv:
             self._states[i] = st
             self._prev_s[i] = 0.0
             self._prev_cp[i] = st.next_checkpoint_index
+            self._prev_gate_dist[i] = None
             out[i] = featurize(st, self.geom)
         return out
 
@@ -132,12 +136,24 @@ class VecPolyTrackEnv:
         self._prev_s[i] = s
         r = self.rw["progress"] * d_prog - self.rw["time_penalty"] * (self.R / 1000.0)
 
+        # Gate-shaping term: reward shrinking distance to the next gate. This
+        # carries the car THROUGH sharp corners where the centerline polyline
+        # stalls (progress can't increase until past the apex). The gate the
+        # car is driving toward = its current next_checkpoint_index.
+        dist = self._dist_to_next_gate(i, st)
+        if dist is not None:
+            prev = self._prev_gate_dist[i]
+            if prev is not None:
+                r += self.rw["gate_progress"] * (prev - dist)
+            self._prev_gate_dist[i] = dist
+
         done = False
         reason = None
         cp = st.next_checkpoint_index
         if cp > self._prev_cp[i]:
             r += self.rw["checkpoint"] * (cp - self._prev_cp[i])
             self._prev_cp[i] = cp
+            self._prev_gate_dist[i] = None  # re-anchor on the new gate
         if st.collision_impulses:
             r -= self.rw["collision"] * min(sum(st.collision_impulses), 4000.0)
         if st.finish_frames is not None:
@@ -146,6 +162,19 @@ class VecPolyTrackEnv:
         elif st.frames >= self.max_episode_frames:
             done, reason = True, "timeout"
         return r, done, {"progress_s": s, "reason": reason, "frames": st.frames}
+
+    def _dist_to_next_gate(self, i: int, st: CarState) -> float | None:
+        """Euclidean distance from the car to the center of the gate it is
+        currently driving toward (next_checkpoint_index into ordered gates)."""
+        gates = self.geom.gates
+        if not gates:
+            return None
+        idx = min(st.next_checkpoint_index, len(gates) - 1)
+        g = gates[idx]
+        dx = st.position[0] - g.center[0]
+        dy = st.position[1] - g.center[1]
+        dz = st.position[2] - g.center[2]
+        return (dx * dx + dy * dy + dz * dz) ** 0.5
 
     def close(self):
         self._node.close()
