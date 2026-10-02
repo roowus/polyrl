@@ -89,14 +89,40 @@ def main():
         writer = None
 
     out_path = args.out or str(Path(args.logdir) / f"sac_{args.track}.pt")
+    best_progress_path = str(Path(args.logdir) / f"sac_{args.track}_bestprog.pt")
     obs = env.reset_all()
     states = list(env._states)
     ep_ret = np.zeros(args.envs)
     ep_len = np.zeros(args.envs, dtype=np.int64)
     ep_count = 0
     best_finish = None
+    best_progress = 0.0
     total_frames = 0
     t0 = time.time()
+
+    # periodic deterministic eval → save the checkpoint with the best
+    # max-progress. Every run so far collapsed AFTER mid-run peak; saving only
+    # on finish (never fires) or at end kept degenerate policies. This keeps
+    # the best one.
+    EVAL_EVERY = 5000
+    eval_env = None  # lazily created so it doesn't hold a pool slot at boot
+
+    def eval_progress() -> float:
+        nonlocal eval_env
+        if eval_env is None:
+            eval_env = VecPolyTrackEnv(n_envs=1, track=args.track, control_hz=50, max_episode_frames=60_000)
+        eobs = eval_env.reset_all()
+        st_list = eval_env._states
+        max_prog = 0.0
+        for _ in range(3000):
+            with torch.no_grad():
+                p = sac.actor(torch.tensor(eobs, dtype=torch.float32, device=device))
+                a = (p > 0.5).cpu().numpy().astype(np.int64)
+            eobs, _, edone, einfos = eval_env.step(a)
+            max_prog = max(max_prog, einfos[0]["progress_s"] / eval_env.geom.total_len)
+            if edone[0]:
+                break
+        return max_prog
 
     for step in range(1, args.steps + 1):
         if step <= args.start_steps:
@@ -163,10 +189,21 @@ def main():
                 f"mean_ret {ep_ret.mean():.1f}"
             )
 
+        if step % EVAL_EVERY == 0:
+            prog = eval_progress()
+            if writer:
+                writer.add_scalar("eval/max_progress", prog, step)
+            if prog > best_progress:
+                best_progress = prog
+                sac.save(best_progress_path)
+                print(f"[train] step {step}: NEW BEST progress {prog:.1%} → saved")
+
     sac.save(out_path)
-    print(f"[train] saved {out_path}; best finish lap: {best_finish}")
+    print(f"[train] saved {out_path}; best finish lap: {best_finish}; best progress: {best_progress:.1%} → {best_progress_path}")
     if writer:
         writer.close()
+    if eval_env is not None:
+        eval_env.close()
     env.close()
 
 

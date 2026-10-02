@@ -236,6 +236,64 @@ async function cmdRunRecording(msg) {
   return { finished, finishFrames, frames: lastFrames, samples: states };
 }
 
+// Score M recordings against a track, K workers in parallel. Each candidate
+// gets its own worker; we replay it and return the per-sample states so the
+// Python side can compute progress-through-gates + finish time.
+// {cmd:"score_batch", track, sample_every, recordings: ["<b64>", ...]}
+//   → { results: [{finished, finishFrames, frames, samples: [hex...]}] }
+async function cmdScoreBatch(msg) {
+  const { track, recordings, sample_every = 20 } = msg;
+  const maxFrames = msg.max_frames ?? 60000;
+  const results = await Promise.all(
+    recordings.map(async (recording, k) => {
+      const w = new SimWorker(30_000 + k, { burst: 100 });
+      try {
+        await w.waitReady();
+        await w.send({ messageType: Ki.Init, ...initPayload(assets) });
+        const carId = 1;
+        await w.send({
+          messageType: Ki.CreateCar,
+          mountainVertices: new Float32Array(0),
+          mountainOffset: { x: 0, y: 0, z: 0 },
+          trackData: trackData(track),
+          carId,
+          carRecording: recording,
+        });
+        const samples = [];
+        let finished = false;
+        let finishFrames = null;
+        let lastFrames = 0;
+        w.onUpdate((bufs) => {
+          for (const b of bufs) {
+            const u8 = new Uint8Array(b);
+            const frames = u8[4] | (u8[5] << 8) | (u8[6] << 16);
+            lastFrames = frames;
+            if (u8[11] & 2) {
+              finished = true;
+              finishFrames = u8[12] | (u8[13] << 8) | (u8[14] << 16);
+            }
+            if (frames % sample_every === 0) samples.push(Buffer.from(u8.subarray(4)).toString('hex'));
+          }
+        });
+        await w.send({ messageType: Ki.StartCar, carId, targetSimulationTimeFrames: maxFrames });
+        const t0 = performance.now();
+        await new Promise((resolve) => {
+          const iv = setInterval(() => {
+            if (finished || lastFrames >= maxFrames - 1 || performance.now() - t0 > 60000) {
+              clearInterval(iv);
+              resolve();
+            }
+          }, 10);
+        });
+        return { finished, finishFrames, frames: lastFrames, samples };
+      } finally {
+        await w.terminate();
+      }
+    }),
+  );
+  return { results };
+}
+
 const rl = readline.createInterface({ input: process.stdin });
 warmPool().then(() => rl.emit('ready'));
 rl.on('line', async (line) => {
@@ -255,6 +313,7 @@ rl.on('line', async (line) => {
     else if (msg.cmd === 'run_recording') resp = await cmdRunRecording(msg);
     else if (msg.cmd === 'step_all') resp = await cmdStepAll(msg);
     else if (msg.cmd === 'reset_all') resp = await cmdResetAll(msg);
+    else if (msg.cmd === 'score_batch') resp = await cmdScoreBatch(msg);
     else resp = { error: `unknown cmd ${msg.cmd}` };
     process.stdout.write(JSON.stringify(resp) + '\n');
   } catch (e) {
