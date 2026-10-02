@@ -72,12 +72,15 @@ class Actor(nn.Module):
 class SacConfig:
     obs_dim: int
     gamma: float = 0.99
-    alpha: float = 0.1
+    alpha: float = 0.1          # initial alpha; auto-tuned if auto_alpha
+    auto_alpha: bool = True     # learn log_alpha toward the target entropy
+    target_entropy: float = 1.386  # 4 × ln(2) ≈ uniform-over-4-buttons entropy
     lr: float = 3e-4
     q_ensemble: int = 4
     redq_subset: int = 2
     hidden: int = 256
     target_update_tau: float = 0.005
+    max_grad_norm: float = 1.0
 
 
 class SAC:
@@ -92,6 +95,13 @@ class SAC:
             p.requires_grad_(False)
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), cfg.lr)
         self.q_opt = torch.optim.Adam(self.q.parameters(), cfg.lr)
+        # learnable temperature
+        self.log_alpha = torch.tensor(math.log(cfg.alpha), device=self.device, requires_grad=True)
+        self.alpha_opt = torch.optim.Adam([self.log_alpha], lr=cfg.lr)
+
+    @property
+    def alpha(self) -> torch.Tensor:
+        return self.log_alpha.exp()
 
     # ---- loss helpers --------------------------------------------------------
 
@@ -109,7 +119,7 @@ class SAC:
             qs = self.q_target(next_obs)[idx]  # (subset, B, 4, 2)
             q_next = self._q_of(qs, next_a.unsqueeze(0).expand(qs.shape[0], -1, -1))
             q_next = q_next.min(dim=0).values.sum(-1)  # min over subset, sum over buttons
-            target = rewards + self.cfg.gamma * (1 - dones) * (q_next - self.cfg.alpha * next_logp)
+            target = rewards + self.cfg.gamma * (1 - dones) * (q_next - self.alpha.detach() * next_logp)
 
         q_taken = self._q_of(self.q(obs), actions.unsqueeze(0).expand(self.cfg.q_ensemble, -1, -1))
         q_taken = q_taken.sum(-1)  # sum over buttons → (E, B)
@@ -119,24 +129,40 @@ class SAC:
         a, logp = self.actor.sample(obs)
         q_a = self._q_of(self.q(obs), a.unsqueeze(0).expand(self.cfg.q_ensemble, -1, -1))
         q_a = q_a.mean(dim=0).sum(-1)  # mean over ensemble, sum over buttons
-        return (self.cfg.alpha * logp - q_a).mean(), logp.mean()
+        return (self.alpha.detach() * logp - q_a).mean(), logp.mean()
+
+    def alpha_loss(self, logp: torch.Tensor) -> torch.Tensor:
+        # drive entropy toward target: -log_alpha * (logp + target).detach()
+        return (-self.log_alpha * (logp + self.cfg.target_entropy).detach()).mean()
 
     def update(self, batch) -> dict:
         obs, actions, next_obs, rewards, dones = [t.to(self.device) for t in batch]
+
         self.q_opt.zero_grad()
         ql = self.q_loss(obs, actions, next_obs, rewards, dones)
         ql.backward()
+        torch.nn.utils.clip_grad_norm_(self.q.parameters(), self.cfg.max_grad_norm)
         self.q_opt.step()
 
         self.actor_opt.zero_grad()
         al, logp = self.actor_loss(obs)
         al.backward()
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), self.cfg.max_grad_norm)
         self.actor_opt.step()
+
+        metrics = {"q_loss": ql.item(), "actor_loss": al.item(), "logp": logp.item(), "alpha": self.alpha.item()}
+
+        if self.cfg.auto_alpha:
+            self.alpha_opt.zero_grad()
+            al_alpha = self.alpha_loss(logp.detach())
+            al_alpha.backward()
+            self.alpha_opt.step()
+            metrics["alpha_loss"] = al_alpha.item()
 
         with torch.no_grad():
             for p, pt in zip(self.q.parameters(), self.q_target.parameters()):
                 pt.mul_(1 - self.cfg.target_update_tau).add_(self.cfg.target_update_tau * p)
-        return {"q_loss": ql.item(), "actor_loss": al.item(), "logp": logp.item()}
+        return metrics
 
     def act(self, obs_tensor: torch.Tensor, deterministic: bool = False) -> tuple[int, int, int, int]:
         with torch.no_grad():
@@ -153,6 +179,7 @@ class SAC:
                 "actor": self.actor.state_dict(),
                 "q": self.q.state_dict(),
                 "q_target": self.q_target.state_dict(),
+                "log_alpha": self.log_alpha.detach().cpu(),
                 "cfg": self.cfg.__dict__,
             },
             path,
@@ -165,4 +192,6 @@ class SAC:
         sac.actor.load_state_dict(ck["actor"])
         sac.q.load_state_dict(ck["q"])
         sac.q_target.load_state_dict(ck["q_target"])
+        if "log_alpha" in ck:
+            sac.log_alpha.data = ck["log_alpha"].to(sac.device)
         return sac
