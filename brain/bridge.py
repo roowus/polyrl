@@ -1,25 +1,37 @@
-"""Bridge server: WebSocket endpoint the in-game PML mod talks to.
+"""Bridge server: WebSocket endpoint the in-game PML mod talks to, plus a
+static HTTP server so PolyModLoader can import the mod over the local network.
 
-Thin relay between the mod (game page) and the Python brain:
-  - receives demo recordings from the mod → writes to fixtures/
-  - serves training status + best-recording export on request
-  - (watch mode / live policy streaming lands in M5b)
+Two listeners on 127.0.0.1:
+  - :8766  WebSocket (mod ↔ brain messages)
+  - :8767  HTTP static server for the mod files (mod/ dir) — PML imports
+           `http://127.0.0.1:8767/0.1.0/main.mod.js` (it needs http(s), not
+           file://, and a plain CDN path won't serve local edits)
 
 Run: uv run python -m brain.bridge
-Listens on ws://127.0.0.1:8766 by default.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
+import threading
 import time
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import websockets
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = REPO / "fixtures"
+MOD_DIR = REPO / "mod"
+
+
+def _serve_mod_http():
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(MOD_DIR))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 8767), handler)
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    print(f"[bridge] mod served at http://127.0.0.1:8767/ (import URL for PML below)")
 
 
 class Bridge:
@@ -91,9 +103,11 @@ class Bridge:
 
 
 async def main():
+    _serve_mod_http()
     bridge = Bridge()
     async with websockets.serve(bridge.handler, "127.0.0.1", 8766):
         print("[bridge] listening on ws://127.0.0.1:8766")
+        print("[bridge] PML import URL: http://127.0.0.1:8767/  (mod manifest: /manifest.json)")
         await asyncio.Future()  # run forever
 
 
