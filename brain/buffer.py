@@ -20,7 +20,7 @@ class ReplayBuffer:
     def add(self, obs, action, next_obs, reward, done):
         t = (
             np.asarray(obs, dtype=np.float32),
-            np.asarray(action, dtype=np.int8),
+            np.asarray(action, dtype=np.float32),  # float32: continuous [gas,brake,steer] or int8 buttons both fit
             np.asarray(next_obs, dtype=np.float32),
             np.float32(reward),
             np.float32(done),
@@ -46,7 +46,7 @@ class ReplayBuffer:
         obs, act, next_obs, rew, done = zip(*batch)
         return (
             torch.tensor(np.array(obs), dtype=torch.float32),
-            torch.tensor(np.array(act), dtype=torch.long),
+            torch.tensor(np.array(act), dtype=torch.float32),
             torch.tensor(np.array(next_obs), dtype=torch.float32),
             torch.tensor(np.array(rew), dtype=torch.float32),
             torch.tensor(np.array(done), dtype=torch.float32),
