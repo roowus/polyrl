@@ -34,13 +34,18 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--gamma", type=float, default=0.997)
     ap.add_argument("--alpha", type=float, default=0.01)
+    ap.add_argument("--resume", default=None, help="tmrl_*.pt checkpoint to resume the policy from")
     ap.add_argument("--logdir", default=str(REPO / "runs"))
     args = ap.parse_args()
 
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     env = VecPolyTrackEnv(n_envs=args.envs, track=args.track, control_hz=50, max_episode_frames=60_000)
 
-    sac = TmrlSAC(TmrlSacConfig(obs_dim=OBS_DIM, gamma=args.gamma, alpha=args.alpha), device=device)
+    if args.resume:
+        sac = TmrlSAC.load(args.resume, device=device)
+        print(f"[tmrl] resumed from {args.resume}", flush=True)
+    else:
+        sac = TmrlSAC(TmrlSacConfig(obs_dim=OBS_DIM, gamma=args.gamma, alpha=args.alpha), device=device)
     buffer = ReplayBuffer(capacity=200_000, demo_ratio=0.0)
 
     try:
