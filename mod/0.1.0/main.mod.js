@@ -28,7 +28,9 @@ class PolyRLMod extends PolyMod {
   init = (pml) => {
     this.pml = pml;
     this._connect();
-    pml.registerKeybind("PolyRL panel", "polyrl.togglePanel", "keydown", "KeyP", null, () =>
+    // PML keybind ids become enum members — keep them flat (no dots).
+    pml.registerBindCategory("PolyRL");
+    pml.registerKeybind("Toggle PolyRL panel", "polyrlTogglePanel", "keydown", "KeyP", null, () =>
       this._togglePanel(),
     );
   };
