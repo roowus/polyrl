@@ -143,6 +143,15 @@ const out = {
   start,
   gates,
   centerline,
+  // tile-space bounds (x and z; y unused for mountains) for createMountainVertices
+  bounds: (() => {
+    let minx = Infinity, minz = Infinity, maxx = -Infinity, maxz = -Infinity;
+    for (const p of placed) {
+      minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
+      minz = Math.min(minz, p.z); maxz = Math.max(maxz, p.z);
+    }
+    return { min: { x: minx, y: minz }, max: { x: maxx, y: maxz } };
+  })(),
   // every placed part with world-space center + rotation, for racing-line
   // reconstruction in Python (driveable parts carry the geometry)
   placedParts: placed.map((p) => ({
