@@ -30,3 +30,22 @@ field. REMAINING hypothesis: a per-part physics-mesh difference on a part the
 official tracks don't stress (the cluster is dense PillarMiddle), OR a subtle
 frame-0 init difference amplified at 395 km/h. Next: in-game replay via PML
 mod (definitive ground truth — does the real game finish it?).
+
+## tmrl recipe (the working config) — v2/v3/v4
+Continuous tanh-Gaussian SAC [gas,brake,steer] + path-progress reward (demo
+lap → 0.1m polyline, elastic 50m scan + 1m rewind) + gamma 0.997 + alpha 0.01 +
+tmrl LRs. First config to clear the 59.7% hairpin.
+
+- v2 (200k): 61.6% peak, stable, no collapse. bestprog checkpointing works.
+- v3 (500k, resume): 64.4% peak at 60k, then plateaued 61-64% for 120k+ steps.
+  The wall: a 21.6m smooth climb at 61-70% of the path. The demo line carries
+  250+ km/h through it; the RL policy arrives too slow to climb it. Pure path
+  reward under-weights entry speed.
+- v4 (speed-gated bonus): 61.7% peak — WORSE. Speed bonus made it carry speed
+  into the wall harder without the line. Reward shaping is not the lever here.
+
+## Current best: 64.4% of summer1 (tmrl_v3 bestprog checkpoint).
+The climb needs a demo line taken at speed (M5 in-game capture) OR the gamma
+horizon to value entry-speed→clear-climb. tmrl's own timeline: days, and 45.5s
+vs 32s WR on their test track — it is clubman-competitive, not WR. We are on
+their curve: 64% in ~4h of training is consistent.
