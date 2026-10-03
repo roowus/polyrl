@@ -6,9 +6,10 @@
 // to test whether the real game finishes a recording the headless sim won't).
 
 // PolyTypes must come from the PML CDN (it's the loader's own API surface).
-// The mod itself is served from this repo's raw GitHub URL so PML can fetch it:
-//   https://raw.githubusercontent.com/roowus/polyrl/main/mod/0.1.0/main.mod.js
-// (repo is public; localhost doesn't work for PML's mod fetch in most setups)
+// The mod itself is served from GitHub Pages so PML can fetch it:
+//   https://roowus.github.io/polyrl/mod/0.1.0/main.mod.js
+// (raw.githubusercontent.com serves .js as text/plain → import() fails; Pages
+// serves application/javascript)
 import { PolyMod } from "https://cdn.polymodloader.com/cb/polytrackmods/PolyModLoader/0.6.3/PolyTypes.js";
 
 const BRIDGE_URL = "ws://127.0.0.1:8766";

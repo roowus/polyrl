@@ -28,16 +28,17 @@ manifest.json          PML global manifest
 
 ## Install (PML / PolyLauncher)
 
-The repo is public: **github.com/roowus/polyrl**. Import the mod from the raw
-GitHub URL (localhost doesn't work for PML's fetch in most setups):
+The repo is public: **github.com/roowus/polyrl**. Import the mod from GitHub
+**Pages** (raw.githubusercontent.com serves `.js` as `text/plain`, which the
+browser refuses to `import()`; Pages serves `application/javascript`):
 
 ```
-https://raw.githubusercontent.com/roowus/polyrl/main/mod/
+https://roowus.github.io/polyrl/mod/
 ```
 
-i.e. the mod base URL is that `mod/` directory; PML reads `manifest.json` then
-`0.1.0/main.mod.js` from it. (For local dev, `uv run python -m brain.bridge`
-also serves it on `http://127.0.0.1:8767/`.)
+PML reads `manifest.json` then `0.1.0/version.json` then `0.1.0/main.mod.js`
+from that base URL. (For local dev, `uv run python -m brain.bridge` also serves
+it on `http://127.0.0.1:8767/`.)
 
 ## How it talks to the brain
 
