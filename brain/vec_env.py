@@ -22,12 +22,12 @@ REPO = Path(__file__).resolve().parent.parent
 CACHE = REPO / "cache"
 
 
-def _build_or_load_path(track: str, geom) -> np.ndarray:
-    """Reward polyline from the best example lap's positions (cached)."""
-    cache = CACHE / f"{track}_path.npy"
+def _build_or_load_path(track: str, geom) -> tuple[np.ndarray, np.ndarray]:
+    """Reward polyline + demo pace from the best example lap (cached)."""
+    cache = CACHE / f"{track}_path.npz"
     if cache.exists():
-        return np.load(cache)
-    # build from the fastest example
+        d = np.load(cache)
+        return d["path"], d["speeds"]
     from .demos import extract_demo, load_fixtures
 
     fx = sorted(
@@ -38,10 +38,11 @@ def _build_or_load_path(track: str, geom) -> np.ndarray:
         raise RuntimeError(f"no example lap for {track} — record one first")
     demo = extract_demo(track, fx[0]["recording"])
     pos = np.array([st.position for st in demo.states])
-    path = resample_path(pos, 0.1)
+    spd = np.array([st.speed_kmh for st in demo.states])
+    path, speeds = resample_path(pos, 0.1, speeds=spd)
     cache.parent.mkdir(exist_ok=True)
-    np.save(cache, path)
-    return path
+    np.savez(cache, path=path, speeds=speeds)
+    return path, speeds
 
 
 class VecPolyTrackEnv:
@@ -58,9 +59,9 @@ class VecPolyTrackEnv:
         self.geom = load_track_geom(track)
         self.R = max(1, round(1000 / control_hz))
         self.max_episode_frames = max_episode_frames
-        self.path = _build_or_load_path(track, self.geom)
+        self.path, self.path_speeds = _build_or_load_path(track, self.geom)
         self._reward_cfg = reward_cfg or PathRewardConfig()
-        self._rewards = [PathReward(self.path, self._reward_cfg) for _ in range(n_envs)]
+        self._rewards = [PathReward(self.path, self._reward_cfg, path_speeds=self.path_speeds) for _ in range(n_envs)]
 
         self._node = _NodeProc()
         self._env_ids: list[int | None] = [None] * n_envs
