@@ -15,6 +15,7 @@ import numpy as np
 from gymnasium import spaces
 
 from .vec_env import VecPolyTrackEnv
+from .features import OBS_DIM
 
 
 class PolyTrackGym(gym.Env):
@@ -24,7 +25,7 @@ class PolyTrackGym(gym.Env):
         super().__init__()
         self.env = VecPolyTrackEnv(n_envs=1, track=track, control_hz=control_hz, max_episode_frames=max_episode_frames)
         self.action_space = spaces.Discrete(16)  # 4-button bitmask
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(30,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
 
     @staticmethod
     def _to_buttons(a: int) -> tuple[int, int, int, int]:
@@ -67,7 +68,7 @@ class VecPolyTrackGym(gym.Env):
         self.env = VecPolyTrackEnv(n_envs=n_envs, track=track, control_hz=control_hz)
         self.n = n_envs
         self.action_space = spaces.MultiDiscrete([16] * n_envs)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(n_envs, 30), dtype=np.float32)
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(n_envs, OBS_DIM), dtype=np.float32)
 
     def reset(self, *, seed=None, options=None):
         super().reset(seed=seed)

@@ -26,12 +26,23 @@ manifest.json          PML global manifest
   panel.css            panel styling
 ```
 
+## Install (PML / PolyLauncher)
+
+The repo is public: **github.com/roowus/polyrl**. Import the mod from the raw
+GitHub URL (localhost doesn't work for PML's fetch in most setups):
+
+```
+https://raw.githubusercontent.com/roowus/polyrl/main/mod/
+```
+
+i.e. the mod base URL is that `mod/` directory; PML reads `manifest.json` then
+`0.1.0/main.mod.js` from it. (For local dev, `uv run python -m brain.bridge`
+also serves it on `http://127.0.0.1:8767/`.)
+
 ## How it talks to the brain
 
 `main.mod.js` opens a WebSocket to `ws://127.0.0.1:8766` (the PolyRL
-`bridge.py` server). JSON control frames both ways; the worker-side hot path
-(action injection + state sampling) rides a `registerSimWorkerMixin` splice —
-see `worker_snippet.js`.
+`bridge.py` server, local to your machine). JSON control frames both ways.
 
 PML specifics used:
 - `PolyMod` lifecycle: `preInit` (register mixins), `init` (WS connect),
