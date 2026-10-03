@@ -52,6 +52,7 @@ class PathRewardConfig:
     max_stray: float = 100.0     # m — beyond this, freeze cursor, zero reward
     reward_scale: float = 0.01   # per point advanced (0.1 m) → 0.1 per meter
     finish_bonus: float = 100.0
+    speed_bonus: float = 0.5     # progress reward × (1 + 0.5·speed/350) — entry speed for jumps
     # termination: no progress for this many consecutive steps (after grace)
     grace_steps: int = 70
     failure_countdown: int = 25  # 0.5s at 50 Hz
@@ -71,8 +72,8 @@ class PathReward:
         self._no_progress = 0
         self._steps = 0
 
-    def step(self, pos) -> tuple[float, bool]:
-        """→ (reward, terminate). pos = car (x,y,z)."""
+    def step(self, pos, speed_kmh: float = 0.0) -> tuple[float, bool]:
+        """→ (reward, terminate). pos = car (x,y,z), speed for entry-speed bonus."""
         cfg = self.cfg
         self._steps += 1
         p = np.asarray(pos, dtype=np.float64)
@@ -97,6 +98,12 @@ class PathReward:
             pass
         elif best_idx > self.cur_idx:
             reward = (best_idx - self.cur_idx) * cfg.reward_scale
+            # entry-speed bonus: reward forward progress MORE at higher speed,
+            # so "arrive fast enough to clear the jump" out-earns "arrive slow
+            # and stall at the base". Gated on progress, so it's not a free
+            # speed exploit (tmrl keeps the path signal dominant).
+            if cfg.speed_bonus > 0.0:
+                reward *= 1.0 + cfg.speed_bonus * min(speed_kmh, 350.0) / 350.0
             self.cur_idx = best_idx
             self._no_progress = 0
         else:

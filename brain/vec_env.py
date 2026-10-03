@@ -148,7 +148,7 @@ class VecPolyTrackEnv:
 
     def _reward_done(self, i: int, st: CarState) -> tuple[float, bool, dict]:
         pr = self._rewards[i]
-        r, path_terminated = pr.step(st.position)
+        r, path_terminated = pr.step(st.position, speed_kmh=st.speed_kmh)
 
         done = False
         reason = None
