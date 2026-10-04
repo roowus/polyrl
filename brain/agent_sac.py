@@ -162,7 +162,22 @@ class TmrlSAC:
 
 
 def quantize_to_buttons(gas: float, brake: float, steer: float) -> tuple[int, int, int, int]:
-    """[gas, brake, steer] in [-1,1] → (up, down, left, right) 0/1."""
+    """[gas, brake, steer] in [-1,1] → (up, down, left, right) 0/1.
+
+    Throttle is ON unless the actor clearly says otherwise. PolyTrack is
+    gas-dominant (human laps hold throttle ~98%); a Gaussian centered at 0 with
+    a `gas>0` threshold gives a ~50% duty cycle (and sampling noise drops it
+    further). Treat gas as a *lift* signal instead: throttle on unless the
+    actor pushes gas clearly negative OR brake is clearly engaged. Steering
+    stays deadbanded."""
+    braking = brake > 0.1
+    throttle_on = (gas > -0.1) and not braking
+    return (
+        1 if throttle_on else 0,
+        1 if braking else 0,
+        1 if steer < -0.1 else 0,
+        1 if steer > 0.1 else 0,
+    )
     return (
         1 if gas > 0.0 else 0,
         1 if brake > 0.0 else 0,
