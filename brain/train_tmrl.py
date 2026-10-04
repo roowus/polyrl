@@ -34,6 +34,12 @@ def main():
     ap.add_argument("--batch", type=int, default=256)
     ap.add_argument("--gamma", type=float, default=0.997)
     ap.add_argument("--alpha", type=float, default=0.01)
+    ap.add_argument("--end-explore", type=float, default=0.3,
+                    help="peak action-jitter amplitude at the exploration frontier (Gabriel's horn)")
+    ap.add_argument("--horn-offset", type=float, default=0.03,
+                    help="how far past the frontier the exploration peak sits (fraction of track)")
+    ap.add_argument("--horn-width", type=float, default=0.06,
+                    help="width of the exploration bump (fraction of track)")
     ap.add_argument("--resume", default=None, help="tmrl_*.pt checkpoint to resume the policy from")
     ap.add_argument("--logdir", default=str(REPO / "runs"))
     args = ap.parse_args()
@@ -67,6 +73,12 @@ def main():
     EVAL_EVERY = 5000
     eval_env = None
 
+    # Gabriel's-horn frontier: the furthest path-progress the policy reliably
+    # reaches. Tracked as an EMA of the per-episode 90th-percentile progress
+    # across the fleet (robust to one lucky deep run). Starts at 0 and creeps
+    # forward as sections are mastered; exploration concentrates just past it.
+    frontier = {"pos": 0.05}
+
     def eval_progress():
         nonlocal eval_env
         if eval_env is None:
@@ -89,12 +101,35 @@ def main():
             actions = np.random.uniform(-1, 1, (args.envs, 3))
         else:
             with torch.no_grad():
-                p, _ = sac.model.actor(torch.tensor(obs, dtype=torch.float32, device=device))
+                # Gabriel's-horn exploration (user's idea): mutation is
+                # concentrated just PAST the competence frontier — the furthest
+                # point the policy reliably reaches. As the tail gets mastered,
+                # the frontier creeps forward and exploration follows it. The
+                # horn flares: near-zero jitter before the frontier, a tight
+                # peak right at it, tapering after.
+                p, _ = sac.model.actor(torch.tensor(obs, dtype=torch.float32, device=device), deterministic=False)
                 actions = p.cpu().numpy()
+                if args.end_explore > 0.0:
+                    prog = np.clip(obs[:, 20], 0.0, 1.0)  # path progress fraction per env
+                    # Gaussian bump centered just past the frontier, width ~
+                    # horn_width, amplitude end_explore. Below the frontier
+                    # (already-mastered) → ~0 jitter; at the frontier → max.
+                    center = frontier["pos"] + args.horn_offset
+                    bump = np.exp(-0.5 * ((prog - center) / args.horn_width) ** 2)
+                    jitter = (args.end_explore * bump)[:, None] * np.random.standard_normal(actions.shape)
+                    actions = np.clip(actions + jitter, -1.0, 1.0)
 
         # quantize continuous → buttons for the env
         btn = np.array([quantize_to_buttons(*a) for a in actions], dtype=np.int64)
         next_obs, rewards, dones, infos = env.step(btn)
+
+        # update the competence frontier from where the fleet actually got
+        progs = [inf["progress_s"] for inf in infos]
+        fleet_p90 = float(np.percentile(progs, 90)) if progs else 0.0
+        # EMA toward the fleet's strong runners; only move forward (never
+        # retreat the frontier on a bad step — mastery is sticky)
+        if fleet_p90 > frontier["pos"]:
+            frontier["pos"] += 0.01 * (fleet_p90 - frontier["pos"])
 
         for i in range(args.envs):
             buffer.add(obs[i], actions[i], next_obs[i], rewards[i], dones[i])
@@ -126,11 +161,13 @@ def main():
             if writer and step % 100 == 0:
                 for k, v in metrics.items():
                     writer.add_scalar(f"sac/{k}", v, step)
+                writer.add_scalar("explore/frontier", frontier["pos"], step)
 
         if step % 1000 == 0:
             print(
                 f"[tmrl] step {step} eps {ep_count} frames {total_frames} "
-                f"({total_frames/1000/(time.time()-t0):.1f}k f/s) best_lap {best_finish} mean_ret {ep_ret.mean():.1f}",
+                f"({total_frames/1000/(time.time()-t0):.1f}k f/s) best_lap {best_finish} "
+                f"mean_ret {ep_ret.mean():.1f} frontier {frontier['pos']:.1%}",
                 flush=True,
             )
 
