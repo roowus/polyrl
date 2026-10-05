@@ -49,3 +49,16 @@ The climb needs a demo line taken at speed (M5 in-game capture) OR the gamma
 horizon to value entry-speed→clear-climb. tmrl's own timeline: days, and 45.5s
 vs 32s WR on their test track — it is clubman-competitive, not WR. We are on
 their curve: 64% in ~4h of training is consistent.
+
+## Why TOTW leaderboard recordings don't re-sim (RESOLVED)
+Not a bug in PolyRL. The TOTW WR lap drives the course perfectly for 16,000
+frames (68→395 km/h, on-rails) then wedges at a pillar cluster at frame 17000
+at 395 km/h — dead stop. Ruled out: spawn transform (exact match), mountains
+(ported, no effect), realtime vs non-realtime, track parse (byte-exact), car
+style (not read by physics), track ID (matches leaderboard), determinism
+(bit-identical across runs on TOTW). CONCLUSION: the recordings were made on a
+pre-0.6.3 physics build; the leaderboard doesn't gate by physics version, so
+stale entries persist. My vendored 0.6.3 physics is correct and deterministic.
+This is WHY the fetch_leaderboard_demos re-sim filter exists and matters.
+TOTW must be learned from scratch (gate-bootstrap path) — no current-physics
+teacher exists for it.
