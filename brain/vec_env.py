@@ -23,7 +23,11 @@ CACHE = REPO / "cache"
 
 
 def _build_or_load_path(track: str, geom) -> tuple[np.ndarray, np.ndarray]:
-    """Reward polyline + demo pace from the best example lap (cached)."""
+    """Reward polyline + demo pace. From the best example lap if one re-sims;
+    otherwise a bootstrap path through the gate centers (spawn → checkpoints →
+    finish) so a track with no usable teacher can still be learned from
+    scratch. The gate path is coarser (no pace, straight legs) but enough for
+    RL to learn a first finisher, which then becomes the real teacher."""
     cache = CACHE / f"{track}_path.npz"
     if cache.exists():
         d = np.load(cache)
@@ -34,12 +38,21 @@ def _build_or_load_path(track: str, geom) -> tuple[np.ndarray, np.ndarray]:
         [f for f in load_fixtures() if f.get("track", track) == track],
         key=lambda f: f.get("frames", 1 << 30),
     )
-    if not fx:
-        raise RuntimeError(f"no example lap for {track} — record one first")
-    demo = extract_demo(track, fx[0]["recording"])
-    pos = np.array([st.position for st in demo.states])
-    spd = np.array([st.speed_kmh for st in demo.states])
-    path, speeds = resample_path(pos, 0.1, speeds=spd)
+    if fx:
+        demo = extract_demo(track, fx[0]["recording"])
+        pos = np.array([st.position for st in demo.states])
+        spd = np.array([st.speed_kmh for st in demo.states])
+        path, speeds = resample_path(pos, 0.1, speeds=spd)
+    else:
+        # bootstrap: spawn → gate centers → finish, resampled to 0.1m
+        start_pos = geom.start["position"] if isinstance(geom.start, dict) else geom.start
+        waypoints = [np.asarray(start_pos, dtype=np.float64)] if start_pos else []
+        waypoints += [np.asarray(g.center) for g in sorted(geom.gates, key=lambda g: (g.is_finish, g.index))]
+        if len(waypoints) < 2:
+            raise RuntimeError(f"no example lap AND no gates for {track}")
+        path, _ = resample_path(np.array(waypoints), 0.1)
+        speeds = np.full(len(path), 150.0)  # neutral pace assumption
+        print(f"[vec_env] no teacher for {track} — bootstrapping path from {len(waypoints)} gates", flush=True)
     cache.parent.mkdir(exist_ok=True)
     np.savez(cache, path=path, speeds=speeds)
     return path, speeds

@@ -84,30 +84,38 @@ class TASOptimizer:
         print(f"[tas] {len(self.examples)} example laps; fastest {self.examples[0][0]} frames", flush=True)
 
     def _mutate(self, base: np.ndarray, sigma_ms: float) -> np.ndarray:
-        """Horn-weighted mutation: jitter toggle times, with per-frame mutation
-        probability following the horn (high at horn_center, ~0 at the start)."""
+        """Horn-weighted mutation: jitter toggle *times* (shift when a button
+        flips, preserving the press/hold structure), with mutation probability
+        following the horn (high at horn_center, ~0 at the start). We operate on
+        the toggle list and rebuild — NOT inverting spans, which corrupts state."""
         T = base.shape[0]
-        out = base.copy()
+        out = np.empty_like(base)
         pw = horn_weights(T, self.horn_center, self.horn_width)
         for j in range(len(CHANNELS)):
-            col = out[:, j]
-            toggles = np.flatnonzero(np.diff(col.astype(np.int8)) != 0) + 1
+            col = base[:, j]
+            toggles = list(np.flatnonzero(np.diff(col.astype(np.int8)) != 0) + 1)
             if col[0]:
-                toggles = np.concatenate([[0], toggles])
-            if len(toggles) == 0:
-                continue
+                toggles = [0] + toggles
+            new_toggles = []
             for tf in toggles:
                 # mutation probability scales with the horn at this frame
-                if self.rng.random() < 0.3 + 0.7 * pw[min(tf, T - 1)]:
+                # (low base rate: most toggles stay; the horn zone gets most)
+                if self.rng.random() < 0.03 + 0.5 * pw[min(tf, T - 1)]:
                     jitter = int(round(self.rng.normal(0, sigma_ms)))
                     if jitter != 0:
-                        new_tf = int(np.clip(tf + jitter, 0, T - 1))
-                        # flip the bit over [min,max) range
-                        lo, hi = min(tf, new_tf), max(tf, new_tf)
-                        out[lo:hi, j] = ~out[lo:hi, j]
-            # normalize to a valid toggle sequence: rebuild from the dense column
-            # (the bit-flip approach can create adjacent toggles; that's fine,
-            #  the Recording encoder dedupes them on write)
+                        tf = int(np.clip(tf + jitter, 0, T - 1))
+                new_toggles.append(tf)
+            # rebuild the column from the (sorted, deduped) toggle list
+            new_toggles = sorted(set(new_toggles))
+            newcol = np.zeros(T, dtype=bool)
+            state = False
+            prev = 0
+            for tf in new_toggles:
+                newcol[prev:tf] = state
+                state = not state
+                prev = tf
+            newcol[prev:] = state
+            out[:, j] = newcol
         return out
 
     def score_batch(self, arrs: list[np.ndarray]) -> list[dict]:
@@ -142,10 +150,11 @@ class TASOptimizer:
         best_ever = (champion_frames, dense_to_rec(champion))
         print(f"[tas] champion seed: {champion_frames} frames = {champion_frames/1000:.2f}s", flush=True)
 
-        sigma = 60.0  # toggle jitter in ms, annealed down
+        sigma = 40.0  # toggle jitter in ms, annealed down to a useful floor
+        gens_since_improve = 0
         for g in range(gens):
             t0 = time.time()
-            sigma = max(3.0, sigma * 0.97)
+            sigma = max(8.0, sigma * 0.985)  # floor at 8ms — 3ms was below the noise floor
             plans = [champion.copy()]  # always re-test the champion
             for _ in range(pop - 1):
                 plans.append(self._mutate(champion, sigma))
@@ -160,18 +169,29 @@ class TASOptimizer:
             improved = False
             if best["finished"] and best["finishFrames"] is not None:
                 if best_ever is None or best["finishFrames"] < best_ever[0]:
-                    # the champion improved → creep the horn FORWARD (toward start)
-                    self.horn_center = max(0.3, self.horn_center - 0.02)
                     champion = plans[best_idx]
                     champion_frames = best["finishFrames"]
                     best_ever = (best["finishFrames"], best["recording"])
                     improved = True
+                    gens_since_improve = 0
                     if out:
                         Path(out).parent.mkdir(exist_ok=True)
                         Path(out).write_text(json.dumps({
                             "track": self.track, "gen": g, "lap_seconds": best["finishFrames"] / 1000,
                             "finish_frames": best["finishFrames"], "recording": best["recording"],
                         }))
+
+            # horn creep: advance toward the start both on improvement (that
+            # section is now strong) AND on exhaustion (the current section
+            # isn't yielding — move on). This is what keeps the horn moving
+            # through the lap instead of parked at the finish line.
+            if improved:
+                self.horn_center = max(0.25, self.horn_center - 0.03)
+            else:
+                gens_since_improve += 1
+                if gens_since_improve >= 12:
+                    self.horn_center = max(0.25, self.horn_center - 0.04)
+                    gens_since_improve = 0
 
             n_fin = sum(1 for s in scored if s["finished"])
             lap = best["finishFrames"] / 1000 if best["finished"] and best["finishFrames"] else None
